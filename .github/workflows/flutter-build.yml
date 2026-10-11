@@ -1,0 +1,89 @@
+name: Flutter APK Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag"
+        required: true
+      build_type:
+        description: "release | debug"
+        required: true
+        default: "release"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Download project ZIP from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -e
+          mkdir -p project
+          cd project
+          gh release download "$TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern "*.zip" \
+            --dir .
+          ZIP_FILE=$(ls *.zip | head -n 1)
+          unzip -q "$ZIP_FILE" -d extracted
+          rm -f "$ZIP_FILE"
+          ls -la extracted
+
+      - name: Detect project root
+        id: detect
+        run: |
+          set -e
+          PUBSPEC=$(find project/extracted -name "pubspec.yaml" -not -path "*/build/*" | head -n 1)
+          if [ -z "$PUBSPEC" ]; then
+            echo "❌ pubspec.yaml tidak ditemukan!"
+            exit 1
+          fi
+          ROOT=$(dirname "$PUBSPEC")
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+          echo "✅ Project root: $ROOT"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          cache: true
+
+      - name: Flutter doctor
+        run: flutter doctor -v
+
+      - name: Build APK
+        working-directory: ${{ steps.detect.outputs.root }}
+        run: |
+          set -e
+          flutter pub get
+          if [ "${{ github.event.inputs.build_type }}" = "debug" ]; then
+            flutter build apk --debug
+          else
+            flutter build apk --release
+          fi
+          ls -la build/app/outputs/flutter-apk/ || true
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-apk
+          path: ${{ steps.detect.outputs.root }}/build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
+          retention-days: 3
